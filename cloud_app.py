@@ -328,10 +328,226 @@ def _extract_img_url_from_container(container):
     return ''
 
 
+def extract_homedepot_html(html_content):
+    products = []
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    json_data = None
+    for script in soup.find_all('script', id='__NEXT_DATA__'):
+        try:
+            data = json.loads(script.string)
+            json_data = data
+            break
+        except Exception:
+            continue
+
+    if json_data:
+        try:
+            props = json_data.get('props', {}).get('pageProps', {})
+            search_results = props.get('searchState', {}).get('results', {})
+            products_data = search_results.get('products', [])
+
+            if not products_data:
+                products_data = props.get('dehydratedState', {}).get('queries', [])
+                for query in products_data:
+                    state = query.get('state', {})
+                    if 'products' in state:
+                        products_data = state['products']
+                        break
+                    data_key = state.get('data', {})
+                    if isinstance(data_key, dict) and 'products' in data_key:
+                        products_data = data_key['products']
+                        break
+
+            if products_data:
+                seen_ids = set()
+                for p in products_data:
+                    try:
+                        product_id = p.get('itemId', '') or p.get('product', {}).get('itemId', '')
+                        if product_id in seen_ids:
+                            continue
+                        seen_ids.add(product_id)
+
+                        info = p.get('product', p) if isinstance(p, dict) else p
+
+                        name = info.get('productLabel', '') or info.get('title', '') or info.get('name', '')
+                        brand = info.get('brand', {}).get('name', '') if isinstance(info.get('brand'), dict) else info.get('brand', '')
+
+                        price_info = info.get('pricing', info.get('price', {}))
+                        if isinstance(price_info, dict):
+                            price = _parse_price_val(price_info.get('value', price_info.get('original', '')))
+                            original_price = _parse_price_val(price_info.get('original', ''))
+                        else:
+                            price = _parse_price_val(price_info)
+                            original_price = None
+
+                        rating = float(info.get('averageRating', 0)) if info.get('averageRating') else None
+                        reviews = int(info.get('totalReviews', 0)) if info.get('totalReviews') else None
+
+                        image_url = info.get('image', '')
+                        if isinstance(image_url, dict):
+                            image_url = image_url.get('url', '')
+                        if not image_url:
+                            images = info.get('mediaList', {}).get('images', [])
+                            if images:
+                                image_url = images[0].get('url', '') or images[0].get('sizes', [{}])[-1].get('url', '')
+
+                        url = f"https://www.homedepot.com/p/{product_id}" if product_id else info.get('canonicalUrl', '')
+
+                        if name and price:
+                            products.append({
+                                'name': name,
+                                'price': price,
+                                'original_price': original_price,
+                                'rating': rating,
+                                'review_count': reviews,
+                                'brand': brand,
+                                'url': url,
+                                'image_url': image_url,
+                            })
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    if not products:
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string)
+                items = []
+                if isinstance(data, list):
+                    items = data
+                elif isinstance(data, dict):
+                    if data.get('@type') == 'ItemList' and 'itemListElement' in data:
+                        items = data['itemListElement']
+                    elif data.get('@type') == 'Product':
+                        items = [data]
+
+                for item in items:
+                    try:
+                        if not isinstance(item, dict):
+                            continue
+                        name = item.get('name', '')
+                        offers = item.get('offers', {})
+                        if isinstance(offers, dict):
+                            price = _parse_price_val(offers.get('price', offers.get('lowPrice', '')))
+                            original_price = _parse_price_val(offers.get('highPrice', ''))
+                        elif isinstance(offers, list) and offers:
+                            price = _parse_price_val(offers[0].get('price', ''))
+                            original_price = None
+                        else:
+                            price = None
+                            original_price = None
+
+                        agg = item.get('aggregateRating', {})
+                        rating = float(agg.get('ratingValue', 0)) if isinstance(agg, dict) and agg.get('ratingValue') else None
+                        reviews = int(agg.get('reviewCount', 0)) if isinstance(agg, dict) and agg.get('reviewCount') else None
+
+                        image = item.get('image', '')
+                        if isinstance(image, list):
+                            image = image[0] if image else ''
+                        elif isinstance(image, dict):
+                            image = image.get('url', '')
+
+                        url = item.get('url', '')
+
+                        if name and price:
+                            products.append({
+                                'name': name,
+                                'price': price,
+                                'original_price': original_price,
+                                'rating': rating,
+                                'review_count': reviews,
+                                'brand': item.get('brand', ''),
+                                'url': url,
+                                'image_url': image,
+                            })
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    if not products:
+        product_cards = soup.select('[data-testid="product-card"]')
+        if not product_cards:
+            product_cards = soup.select('.product-pod')
+        if not product_cards:
+            product_cards = soup.select('[class*="ProductCard"]')
+
+        seen_urls = set()
+        for card in product_cards:
+            try:
+                link = card.select_one('a[href*="/p/"]')
+                if not link:
+                    link = card.find('a', href=True)
+                url = link.get('href', '').split('?')[0] if link else ''
+                if url in seen_urls or not url:
+                    continue
+                seen_urls.add(url)
+
+                if not url.startswith('http'):
+                    url = 'https://www.homedepot.com' + url
+
+                name_el = card.select_one('[data-testid="product-card-title"]')
+                if not name_el:
+                    name_el = card.select_one('.product-pod--title')
+                if not name_el:
+                    name_el = card.select_one('h3, h4, [class*="title"], [class*="Title"]')
+                name = name_el.get_text(strip=True) if name_el else ''
+
+                if not name and link:
+                    name = link.get_text(strip=True)
+
+                price_el = card.select_one('[data-testid="product-card-price"]')
+                if not price_el:
+                    price_el = card.select_one('.price-format__main-price')
+                if not price_el:
+                    price_el = card.select_one('[class*="price"], [class*="Price"]')
+                price_text = price_el.get_text(strip=True) if price_el else card.get_text(separator=' ', strip=True)
+                price_match = re.search(r'\$([\d,]+\.?\d*)', price_text)
+                price = float(price_match.group(1).replace(',', '')) if price_match else None
+
+                rating_el = card.select_one('[class*="rating"], [class*="Rating"], [data-testid*="rating"]')
+                rating_text = rating_el.get_text(strip=True) if rating_el else ''
+                rating_match = re.search(r'(\d+\.?\d*)', rating_text)
+                rating = float(rating_match.group(1)) if rating_match else None
+
+                review_el = card.select_one('[class*="review"], [class*="Review"], [data-testid*="review"]')
+                review_text = review_el.get_text(strip=True) if review_el else ''
+                review_match = re.search(r'(\d[\d,]*)', review_text)
+                reviews = int(review_match.group(1).replace(',', '')) if review_match else None
+
+                image_url = ''
+                img = card.select_one('img')
+                if img:
+                    image_url = img.get('src', '') or img.get('data-src', '')
+                    srcset = img.get('srcset', '')
+                    if srcset:
+                        urls = re.findall(r'(https?://[^\s,]+)', srcset)
+                        if urls:
+                            image_url = urls[-1]
+
+                if name and price:
+                    products.append({
+                        'name': name,
+                        'price': price,
+                        'original_price': None,
+                        'rating': rating,
+                        'review_count': reviews,
+                        'brand': '',
+                        'url': url,
+                        'image_url': image_url,
+                    })
+            except Exception:
+                continue
+
+    return products
+
+
 with st.sidebar:
     st.header("🔧 控制面板")
 
-    tab1, tab2 = st.tabs(["🌐 网页提取", "📂 手动导入"])
+    tab1, tab2, tab3 = st.tabs(["🌐 Wayfair", "🏠 Home Depot", "📂 手动导入"])
 
     with tab1:
         st.subheader("从 Wayfair 网页提取数据")
@@ -387,6 +603,59 @@ with st.sidebar:
         st.markdown("💡 可以多次上传不同页面的 HTML,数据会自动合并")
 
     with tab2:
+        st.subheader("从 Home Depot 网页提取数据")
+        st.markdown("**支持 Home Depot 搜索结果页面提取**")
+
+        with st.expander("📖 操作步骤 (点击展开)", expanded=True):
+            st.markdown("""
+            **第一步: 打开 Home Depot**
+            1. 用浏览器打开 [homedepot.com](https://www.homedepot.com)
+            2. 如果有代理,请先配置好代理再打开
+
+            **第二步: 搜索产品**
+            3. 在 Home Depot 搜索框输入关键词 (如: outdoor sofa)
+            4. 等待搜索结果完全加载
+
+            **第三步: 保存网页**
+            5. 按 **Ctrl + S** 保存网页
+            6. 保存类型选择 **"网页,全部"** 或 **"Webpage, Complete"**
+            7. 保存到任意位置
+
+            **第四步: 上传提取**
+            8. 在下方上传保存的 HTML 文件
+            9. 系统自动提取产品数据!
+            """)
+
+        hd_file = st.file_uploader("📤 上传 Home Depot 搜索结果页面", type=['html', 'htm'], key="hd_upload")
+
+        if hd_file is not None:
+            try:
+                hd_content = hd_file.read().decode('utf-8', errors='ignore')
+                with st.spinner("正在提取 Home Depot 产品数据..."):
+                    products = extract_homedepot_html(hd_content)
+
+                if products:
+                    new_df = pd.DataFrame(products)
+                    if st.session_state.products_data is not None:
+                        existing = st.session_state.products_data
+                        combined = pd.concat([existing, new_df], ignore_index=True)
+                        combined = combined.drop_duplicates(subset=['name'], keep='last')
+                        st.session_state.products_data = combined
+                    else:
+                        st.session_state.products_data = new_df
+                    st.success(f"✅ 提取到 {len(products)} 个产品! (共 {len(st.session_state.products_data)} 个)")
+                    with st.expander("预览数据"):
+                        st.dataframe(new_df.head(10), use_container_width=True)
+                else:
+                    st.warning("未提取到产品数据")
+                    st.info("请确保上传的是 Home Depot 搜索结果页面 (不是首页或验证页)")
+            except Exception as e:
+                st.error(f"提取失败: {e}")
+
+        st.markdown("---")
+        st.markdown("💡 Wayfair 和 Home Depot 的数据可以合并分析,也可以单独查看")
+
+    with tab3:
         st.subheader("手动导入数据文件")
 
         st.markdown("""
@@ -722,11 +991,11 @@ else:
 
     st.subheader("📖 使用指南")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         st.markdown("""
-        ### 🌐 方式一: 网页提取 (推荐)
+        ### 🌐 Wayfair 提取
 
         1. 用浏览器打开 wayfair.com
         2. 搜索产品关键词
@@ -742,7 +1011,22 @@ else:
 
     with col2:
         st.markdown("""
-        ### 📂 方式二: 手动导入
+        ### 🏠 Home Depot 提取
+
+        1. 用浏览器打开 homedepot.com
+        2. 搜索产品关键词
+        3. 按 Ctrl+S 保存网页
+        4. 上传 HTML 文件
+        5. 系统自动提取数据!
+
+        **优势:**
+        - 同样无需自动化
+        - 支持多平台数据合并分析
+        """)
+
+    with col3:
+        st.markdown("""
+        ### 📂 手动导入
 
         1. 准备 Excel/CSV 文件
         2. 上传文件
@@ -758,4 +1042,4 @@ else:
         """)
 
 st.markdown("---")
-st.markdown("💡 推荐使用「网页提取」方式: 手动浏览 Wayfair → Ctrl+S 保存 → 上传 HTML → 自动提取数据")
+st.markdown("💡 支持 Wayfair + Home Depot 多平台数据: 浏览网页 → Ctrl+S 保存 → 上传 HTML → 自动提取 → 合并分析")
