@@ -332,140 +332,189 @@ def extract_homedepot_html(html_content):
     products = []
     soup = BeautifulSoup(html_content, 'html.parser')
 
-    json_data = None
-    for script in soup.find_all('script', id='__NEXT_DATA__'):
+    for script in soup.find_all('script', type='application/ld+json'):
         try:
             data = json.loads(script.string)
-            json_data = data
-            break
+            items = []
+
+            if isinstance(data, list):
+                for entry in data:
+                    if isinstance(entry, dict):
+                        if entry.get('@type') == 'WebPage':
+                            me = entry.get('mainEntity', {})
+                            offers = me.get('offers', {})
+                            item_offered = offers.get('itemOffered', [])
+                            if item_offered:
+                                items = item_offered
+                                break
+                        elif entry.get('@type') == 'ItemList' and 'itemListElement' in entry:
+                            items = entry['itemListElement']
+                            break
+                        elif entry.get('@type') == 'Product':
+                            items.append(entry)
+                if not items:
+                    items = [e for e in data if isinstance(e, dict) and e.get('@type') == 'Product']
+            elif isinstance(data, dict):
+                if data.get('@type') == 'WebPage':
+                    me = data.get('mainEntity', {})
+                    offers = me.get('offers', {})
+                    items = offers.get('itemOffered', [])
+                elif data.get('@type') == 'ItemList' and 'itemListElement' in data:
+                    items = data['itemListElement']
+                elif data.get('@type') == 'Product':
+                    items = [data]
+
+            for item in items:
+                try:
+                    if not isinstance(item, dict) or item.get('@type') != 'Product':
+                        continue
+
+                    name = item.get('name', '')
+                    if not name:
+                        continue
+
+                    offers = item.get('offers', {})
+                    if isinstance(offers, dict):
+                        price = _parse_price_val(offers.get('price', offers.get('lowPrice', '')))
+                        original_price = _parse_price_val(offers.get('highPrice', ''))
+                        url = offers.get('url', '')
+                    elif isinstance(offers, list) and offers:
+                        price = _parse_price_val(offers[0].get('price', ''))
+                        original_price = None
+                        url = offers[0].get('url', '')
+                    else:
+                        price = None
+                        original_price = None
+                        url = ''
+
+                    if not price:
+                        continue
+
+                    agg = item.get('aggregateRating', {})
+                    rating = None
+                    reviews = None
+                    if isinstance(agg, dict):
+                        rv = agg.get('ratingValue')
+                        if rv:
+                            try:
+                                rating = round(float(rv), 1)
+                            except Exception:
+                                pass
+                        rc = agg.get('reviewCount')
+                        if rc:
+                            try:
+                                reviews = int(rc)
+                            except Exception:
+                                pass
+
+                    brand = item.get('brand', '')
+                    if isinstance(brand, dict):
+                        brand = brand.get('name', '')
+
+                    image = item.get('image', '')
+                    if isinstance(image, list):
+                        image = image[0] if image else ''
+                    elif isinstance(image, dict):
+                        image = image.get('url', '')
+                    if image and '_100.' in image:
+                        image = image.replace('_100.', '_600.')
+
+                    if name and price:
+                        products.append({
+                            'name': name,
+                            'price': price,
+                            'original_price': original_price,
+                            'rating': rating,
+                            'review_count': reviews,
+                            'brand': brand,
+                            'url': url,
+                            'image_url': image,
+                        })
+                except Exception:
+                    continue
         except Exception:
             continue
 
-    if json_data:
-        try:
-            props = json_data.get('props', {}).get('pageProps', {})
-            search_results = props.get('searchState', {}).get('results', {})
-            products_data = search_results.get('products', [])
-
-            if not products_data:
-                products_data = props.get('dehydratedState', {}).get('queries', [])
-                for query in products_data:
-                    state = query.get('state', {})
-                    if 'products' in state:
-                        products_data = state['products']
-                        break
-                    data_key = state.get('data', {})
-                    if isinstance(data_key, dict) and 'products' in data_key:
-                        products_data = data_key['products']
-                        break
-
-            if products_data:
-                seen_ids = set()
-                for p in products_data:
-                    try:
-                        product_id = p.get('itemId', '') or p.get('product', {}).get('itemId', '')
-                        if product_id in seen_ids:
-                            continue
-                        seen_ids.add(product_id)
-
-                        info = p.get('product', p) if isinstance(p, dict) else p
-
-                        name = info.get('productLabel', '') or info.get('title', '') or info.get('name', '')
-                        brand = info.get('brand', {}).get('name', '') if isinstance(info.get('brand'), dict) else info.get('brand', '')
-
-                        price_info = info.get('pricing', info.get('price', {}))
-                        if isinstance(price_info, dict):
-                            price = _parse_price_val(price_info.get('value', price_info.get('original', '')))
-                            original_price = _parse_price_val(price_info.get('original', ''))
-                        else:
-                            price = _parse_price_val(price_info)
-                            original_price = None
-
-                        rating = float(info.get('averageRating', 0)) if info.get('averageRating') else None
-                        reviews = int(info.get('totalReviews', 0)) if info.get('totalReviews') else None
-
-                        image_url = info.get('image', '')
-                        if isinstance(image_url, dict):
-                            image_url = image_url.get('url', '')
-                        if not image_url:
-                            images = info.get('mediaList', {}).get('images', [])
-                            if images:
-                                image_url = images[0].get('url', '') or images[0].get('sizes', [{}])[-1].get('url', '')
-
-                        url = f"https://www.homedepot.com/p/{product_id}" if product_id else info.get('canonicalUrl', '')
-
-                        if name and price:
-                            products.append({
-                                'name': name,
-                                'price': price,
-                                'original_price': original_price,
-                                'rating': rating,
-                                'review_count': reviews,
-                                'brand': brand,
-                                'url': url,
-                                'image_url': image_url,
-                            })
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-
     if not products:
-        for script in soup.find_all('script', type='application/ld+json'):
+        json_data = None
+        for script in soup.find_all('script', id='__NEXT_DATA__'):
             try:
                 data = json.loads(script.string)
-                items = []
-                if isinstance(data, list):
-                    items = data
-                elif isinstance(data, dict):
-                    if data.get('@type') == 'ItemList' and 'itemListElement' in data:
-                        items = data['itemListElement']
-                    elif data.get('@type') == 'Product':
-                        items = [data]
-
-                for item in items:
-                    try:
-                        if not isinstance(item, dict):
-                            continue
-                        name = item.get('name', '')
-                        offers = item.get('offers', {})
-                        if isinstance(offers, dict):
-                            price = _parse_price_val(offers.get('price', offers.get('lowPrice', '')))
-                            original_price = _parse_price_val(offers.get('highPrice', ''))
-                        elif isinstance(offers, list) and offers:
-                            price = _parse_price_val(offers[0].get('price', ''))
-                            original_price = None
-                        else:
-                            price = None
-                            original_price = None
-
-                        agg = item.get('aggregateRating', {})
-                        rating = float(agg.get('ratingValue', 0)) if isinstance(agg, dict) and agg.get('ratingValue') else None
-                        reviews = int(agg.get('reviewCount', 0)) if isinstance(agg, dict) and agg.get('reviewCount') else None
-
-                        image = item.get('image', '')
-                        if isinstance(image, list):
-                            image = image[0] if image else ''
-                        elif isinstance(image, dict):
-                            image = image.get('url', '')
-
-                        url = item.get('url', '')
-
-                        if name and price:
-                            products.append({
-                                'name': name,
-                                'price': price,
-                                'original_price': original_price,
-                                'rating': rating,
-                                'review_count': reviews,
-                                'brand': item.get('brand', ''),
-                                'url': url,
-                                'image_url': image,
-                            })
-                    except Exception:
-                        continue
+                json_data = data
+                break
             except Exception:
                 continue
+
+        if json_data:
+            try:
+                props = json_data.get('props', {}).get('pageProps', {})
+                search_results = props.get('searchState', {}).get('results', {})
+                products_data = search_results.get('products', [])
+
+                if not products_data:
+                    products_data = props.get('dehydratedState', {}).get('queries', [])
+                    for query in products_data:
+                        state = query.get('state', {})
+                        if 'products' in state:
+                            products_data = state['products']
+                            break
+                        data_key = state.get('data', {})
+                        if isinstance(data_key, dict) and 'products' in data_key:
+                            products_data = data_key['products']
+                            break
+
+                if products_data:
+                    seen_ids = set()
+                    for p in products_data:
+                        try:
+                            product_id = p.get('itemId', '') or p.get('product', {}).get('itemId', '')
+                            if product_id in seen_ids:
+                                continue
+                            seen_ids.add(product_id)
+
+                            info = p.get('product', p) if isinstance(p, dict) else p
+
+                            name = info.get('productLabel', '') or info.get('title', '') or info.get('name', '')
+                            brand = info.get('brand', {}).get('name', '') if isinstance(info.get('brand'), dict) else info.get('brand', '')
+
+                            price_info = info.get('pricing', info.get('price', {}))
+                            if isinstance(price_info, dict):
+                                price = _parse_price_val(price_info.get('value', price_info.get('original', '')))
+                                original_price = _parse_price_val(price_info.get('original', ''))
+                            else:
+                                price = _parse_price_val(price_info)
+                                original_price = None
+
+                            rating = float(info.get('averageRating', 0)) if info.get('averageRating') else None
+                            reviews = int(info.get('totalReviews', 0)) if info.get('totalReviews') else None
+
+                            image_url = info.get('image', '')
+                            if isinstance(image_url, dict):
+                                image_url = image_url.get('url', '')
+                            if not image_url:
+                                images = info.get('mediaList', {}).get('images', [])
+                                if images:
+                                    image_url = images[0].get('url', '') or images[0].get('sizes', [{}])[-1].get('url', '')
+                            if image_url and '_100.' in image_url:
+                                image_url = image_url.replace('_100.', '_600.')
+
+                            url = f"https://www.homedepot.com/p/{product_id}" if product_id else info.get('canonicalUrl', '')
+
+                            if name and price:
+                                products.append({
+                                    'name': name,
+                                    'price': price,
+                                    'original_price': original_price,
+                                    'rating': rating,
+                                    'review_count': reviews,
+                                    'brand': brand,
+                                    'url': url,
+                                    'image_url': image_url,
+                                })
+                        except Exception:
+                            continue
+            except Exception:
+                pass
 
     if not products:
         product_cards = soup.select('[data-testid="product-card"]')
@@ -523,9 +572,11 @@ def extract_homedepot_html(html_content):
                     image_url = img.get('src', '') or img.get('data-src', '')
                     srcset = img.get('srcset', '')
                     if srcset:
-                        urls = re.findall(r'(https?://[^\s,]+)', srcset)
-                        if urls:
-                            image_url = urls[-1]
+                        img_urls = re.findall(r'(https?://[^\s,]+)', srcset)
+                        if img_urls:
+                            image_url = img_urls[-1]
+                    if image_url and '_100.' in image_url:
+                        image_url = image_url.replace('_100.', '_600.')
 
                 if name and price:
                     products.append({
