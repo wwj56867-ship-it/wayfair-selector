@@ -31,6 +31,71 @@ def extract_wayfair_html(html_content):
     products = []
     soup = BeautifulSoup(html_content, 'html.parser')
 
+    hurry_map = {}
+    for m in re.finditer(
+        r'<strong>(Better\s+Hurry|Selling\s+Quickly)</strong>\s*(\d+)\s*sold\s*<span[^>]*>in\s*(\d+)\s*days?</span>.*?aria-label="([^"]+?)"',
+        html_content, re.IGNORECASE | re.DOTALL
+    ):
+        label = m.group(1).strip()
+        sold_count = int(m.group(2))
+        sold_days = int(m.group(3))
+        product_name = m.group(4).strip()
+        hurry_map[product_name] = {'sold_count': sold_count, 'sold_days': sold_days, 'label': label}
+
+    social_tags_map = {}
+    for m in re.finditer(
+        r'tagg-txt[^>]*>\s*<strong>([^<]+)</strong>(.*?)</div>.*?aria-label="([^"]+)"',
+        html_content, re.IGNORECASE | re.DOTALL
+    ):
+        tag_label = re.sub(r'<[^>]+>', ' ', m.group(1)).strip()
+        pname = m.group(3).strip()
+        if tag_label in ['Better Hurry', 'Selling Quickly']:
+            continue
+        if pname not in social_tags_map:
+            social_tags_map[pname] = []
+        social_tags_map[pname].append(tag_label)
+
+    stock_map = {}
+    for m in re.finditer(
+        r'aria-label="([^"]+)".*?(\d+)\s+Left\s+in\s+Stock',
+        html_content, re.IGNORECASE | re.DOTALL
+    ):
+        pname = m.group(1).strip()
+        stock_count = int(m.group(2))
+        stock_map[pname] = stock_count
+
+    low_stock_set = set()
+    for m in re.finditer(
+        r'aria-label="([^"]+)".*?Low\s+Stock',
+        html_content, re.IGNORECASE | re.DOTALL
+    ):
+        low_stock_set.add(m.group(1).strip())
+
+    shipping_map = {}
+    for m in re.finditer(
+        r'aria-label="([^"]+)".*?FREE\s+(2-Day|3-Day|Fast\s+)?Delivery',
+        html_content, re.IGNORECASE | re.DOTALL
+    ):
+        pname = m.group(1).strip()
+        ship_type = m.group(2).strip() if m.group(2) else 'Standard'
+        if pname not in shipping_map:
+            shipping_map[pname] = ship_type
+
+    sponsored_set = set()
+    for m in re.finditer(
+        r'aria-label="([^"]+)".*?isSponsored&quot;:true',
+        html_content, re.IGNORECASE | re.DOTALL
+    ):
+        sponsored_set.add(m.group(1).strip())
+
+    def _match_name(name, target_map):
+        if not name:
+            return None
+        for tname in target_map:
+            if tname in name or name in tname:
+                return tname
+        return None
+
     card_items = soup.select('[data-node-id*="ListingCollectionItem"]')
     if card_items:
         seen_urls = set()
@@ -86,6 +151,46 @@ def extract_wayfair_html(html_content):
                 brand_match = re.search(r'By\s+([\w\s]+?)(?:\s*[\u2122\u00ae\u2117]|\s{2,}|$)', text)
                 brand = brand_match.group(1).strip() if brand_match else ''
 
+                sold_count = None
+                sold_days = None
+                sales_label = None
+                if name:
+                    matched = _match_name(name, hurry_map)
+                    if matched:
+                        sold_count = hurry_map[matched]['sold_count']
+                        sold_days = hurry_map[matched]['sold_days']
+                        sales_label = hurry_map[matched].get('label', 'Better Hurry')
+
+                social_tags = []
+                if name:
+                    matched = _match_name(name, social_tags_map)
+                    if matched:
+                        social_tags = social_tags_map[matched]
+
+                stock_left = None
+                if name:
+                    matched = _match_name(name, stock_map)
+                    if matched:
+                        stock_left = stock_map[matched]
+
+                is_low_stock = False
+                if name:
+                    matched = _match_name(name, {s: s for s in low_stock_set})
+                    if matched:
+                        is_low_stock = True
+
+                shipping_type = None
+                if name:
+                    matched = _match_name(name, shipping_map)
+                    if matched:
+                        shipping_type = shipping_map[matched]
+
+                is_sponsored = False
+                if name:
+                    matched = _match_name(name, {s: s for s in sponsored_set})
+                    if matched:
+                        is_sponsored = True
+
                 if name and price:
                     products.append({
                         'name': name,
@@ -96,6 +201,14 @@ def extract_wayfair_html(html_content):
                         'brand': brand,
                         'url': url,
                         'image_url': image_url,
+                        'sold_count': sold_count,
+                        'sold_days': sold_days,
+                        'sales_label': sales_label,
+                        'social_tags': social_tags,
+                        'stock_left': stock_left,
+                        'is_low_stock': is_low_stock,
+                        'shipping_type': shipping_type,
+                        'is_sponsored': is_sponsored,
                     })
             except Exception:
                 continue
@@ -135,6 +248,46 @@ def extract_wayfair_html(html_content):
                         continue
                     seen_urls.add(url)
 
+                    sold_count = None
+                    sold_days = None
+                    sales_label = None
+                    if name:
+                        matched = _match_name(name, hurry_map)
+                        if matched:
+                            sold_count = hurry_map[matched]['sold_count']
+                            sold_days = hurry_map[matched]['sold_days']
+                            sales_label = hurry_map[matched].get('label', 'Better Hurry')
+
+                    social_tags = []
+                    if name:
+                        matched = _match_name(name, social_tags_map)
+                        if matched:
+                            social_tags = social_tags_map[matched]
+
+                    stock_left = None
+                    if name:
+                        matched = _match_name(name, stock_map)
+                        if matched:
+                            stock_left = stock_map[matched]
+
+                    is_low_stock = False
+                    if name:
+                        matched = _match_name(name, {s: s for s in low_stock_set})
+                        if matched:
+                            is_low_stock = True
+
+                    shipping_type = None
+                    if name:
+                        matched = _match_name(name, shipping_map)
+                        if matched:
+                            shipping_type = shipping_map[matched]
+
+                    is_sponsored = False
+                    if name:
+                        matched = _match_name(name, {s: s for s in sponsored_set})
+                        if matched:
+                            is_sponsored = True
+
                     if name and price:
                         products.append({
                             'name': name,
@@ -145,6 +298,14 @@ def extract_wayfair_html(html_content):
                             'brand': '',
                             'url': url,
                             'image_url': _extract_img_url_from_container(banner),
+                            'sold_count': sold_count,
+                            'sold_days': sold_days,
+                            'sales_label': sales_label,
+                            'social_tags': social_tags,
+                            'stock_left': stock_left,
+                            'is_low_stock': is_low_stock,
+                            'shipping_type': shipping_type,
+                            'is_sponsored': is_sponsored,
                         })
                 except Exception:
                     continue
@@ -204,6 +365,46 @@ def extract_wayfair_html(html_content):
                     reviews = int(review_match.group(1).replace(',', '')) if review_match else None
 
                     if name and price:
+                        sold_count = None
+                        sold_days = None
+                        sales_label = None
+                        if name:
+                            matched = _match_name(name, hurry_map)
+                            if matched:
+                                sold_count = hurry_map[matched]['sold_count']
+                                sold_days = hurry_map[matched]['sold_days']
+                                sales_label = hurry_map[matched].get('label', 'Better Hurry')
+
+                        social_tags = []
+                        if name:
+                            matched = _match_name(name, social_tags_map)
+                            if matched:
+                                social_tags = social_tags_map[matched]
+
+                        stock_left = None
+                        if name:
+                            matched = _match_name(name, stock_map)
+                            if matched:
+                                stock_left = stock_map[matched]
+
+                        is_low_stock = False
+                        if name:
+                            matched = _match_name(name, {s: s for s in low_stock_set})
+                            if matched:
+                                is_low_stock = True
+
+                        shipping_type = None
+                        if name:
+                            matched = _match_name(name, shipping_map)
+                            if matched:
+                                shipping_type = shipping_map[matched]
+
+                        is_sponsored = False
+                        if name:
+                            matched = _match_name(name, {s: s for s in sponsored_set})
+                            if matched:
+                                is_sponsored = True
+
                         products.append({
                             'name': name,
                             'price': price,
@@ -213,6 +414,14 @@ def extract_wayfair_html(html_content):
                             'brand': '',
                             'url': url,
                             'image_url': image_url,
+                            'sold_count': sold_count,
+                            'sold_days': sold_days,
+                            'sales_label': sales_label,
+                            'social_tags': social_tags,
+                            'stock_left': stock_left,
+                            'is_low_stock': is_low_stock,
+                            'shipping_type': shipping_type,
+                            'is_sponsored': is_sponsored,
                         })
                 except Exception:
                     continue
@@ -270,6 +479,40 @@ def extract_wayfair_html(html_content):
                             product_image = product_image.get('url', '')
 
                         if product_name and product_price:
+                            sold_count = None
+                            sold_days = None
+                            sales_label = None
+                            matched = _match_name(product_name, hurry_map)
+                            if matched:
+                                sold_count = hurry_map[matched]['sold_count']
+                                sold_days = hurry_map[matched]['sold_days']
+                                sales_label = hurry_map[matched].get('label', 'Better Hurry')
+
+                            social_tags = []
+                            matched = _match_name(product_name, social_tags_map)
+                            if matched:
+                                social_tags = social_tags_map[matched]
+
+                            stock_left = None
+                            matched = _match_name(product_name, stock_map)
+                            if matched:
+                                stock_left = stock_map[matched]
+
+                            is_low_stock = False
+                            matched = _match_name(product_name, {s: s for s in low_stock_set})
+                            if matched:
+                                is_low_stock = True
+
+                            shipping_type = None
+                            matched = _match_name(product_name, shipping_map)
+                            if matched:
+                                shipping_type = shipping_map[matched]
+
+                            is_sponsored = False
+                            matched = _match_name(product_name, {s: s for s in sponsored_set})
+                            if matched:
+                                is_sponsored = True
+
                             products.append({
                                 'name': product_name,
                                 'price': product_price,
@@ -279,6 +522,14 @@ def extract_wayfair_html(html_content):
                                 'brand': '',
                                 'url': product_url,
                                 'image_url': product_image,
+                                'sold_count': sold_count,
+                                'sold_days': sold_days,
+                                'sales_label': sales_label,
+                                'social_tags': social_tags,
+                                'stock_left': stock_left,
+                                'is_low_stock': is_low_stock,
+                                'shipping_type': shipping_type,
+                                'is_sponsored': is_sponsored,
                             })
                 except Exception:
                     continue
@@ -758,29 +1009,34 @@ with st.sidebar:
 
         presets = {
             "均衡模式": {
-                'price_score': 0.11, 'profit_margin_score': 0.11, 'competition_score': 0.11,
-                'demand_score': 0.11, 'rating_score': 0.11, 'review_score': 0.11,
-                'discount_score': 0.11, 'name_length_score': 0.11, 'market_opportunity_score': 0.12,
+                'price_score': 0.08, 'profit_margin_score': 0.08, 'competition_score': 0.08,
+                'demand_score': 0.08, 'rating_score': 0.08, 'review_score': 0.08,
+                'discount_score': 0.08, 'name_length_score': 0.08, 'market_opportunity_score': 0.08,
+                'sales_urgency_score': 0.08, 'supply_scarcity_score': 0.08, 'shipping_advantage_score': 0.08,
             },
             "利润优先": {
-                'price_score': 0.10, 'profit_margin_score': 0.35, 'competition_score': 0.10,
-                'demand_score': 0.10, 'rating_score': 0.05, 'review_score': 0.05,
-                'discount_score': 0.15, 'name_length_score': 0.03, 'market_opportunity_score': 0.07,
+                'price_score': 0.06, 'profit_margin_score': 0.25, 'competition_score': 0.06,
+                'demand_score': 0.06, 'rating_score': 0.04, 'review_score': 0.04,
+                'discount_score': 0.10, 'name_length_score': 0.02, 'market_opportunity_score': 0.05,
+                'sales_urgency_score': 0.12, 'supply_scarcity_score': 0.10, 'shipping_advantage_score': 0.10,
             },
             "蓝海市场": {
-                'price_score': 0.05, 'profit_margin_score': 0.10, 'competition_score': 0.35,
-                'demand_score': 0.05, 'rating_score': 0.05, 'review_score': 0.05,
-                'discount_score': 0.05, 'name_length_score': 0.05, 'market_opportunity_score': 0.25,
+                'price_score': 0.04, 'profit_margin_score': 0.06, 'competition_score': 0.25,
+                'demand_score': 0.04, 'rating_score': 0.04, 'review_score': 0.04,
+                'discount_score': 0.04, 'name_length_score': 0.04, 'market_opportunity_score': 0.18,
+                'sales_urgency_score': 0.08, 'supply_scarcity_score': 0.12, 'shipping_advantage_score': 0.07,
             },
             "高需求优先": {
-                'price_score': 0.05, 'profit_margin_score': 0.10, 'competition_score': 0.05,
-                'demand_score': 0.35, 'rating_score': 0.10, 'review_score': 0.15,
-                'discount_score': 0.05, 'name_length_score': 0.05, 'market_opportunity_score': 0.10,
+                'price_score': 0.04, 'profit_margin_score': 0.06, 'competition_score': 0.04,
+                'demand_score': 0.20, 'rating_score': 0.06, 'review_score': 0.10,
+                'discount_score': 0.04, 'name_length_score': 0.03, 'market_opportunity_score': 0.06,
+                'sales_urgency_score': 0.15, 'supply_scarcity_score': 0.12, 'shipping_advantage_score': 0.10,
             },
             "评分优先": {
-                'price_score': 0.05, 'profit_margin_score': 0.10, 'competition_score': 0.05,
-                'demand_score': 0.10, 'rating_score': 0.35, 'review_score': 0.10,
-                'discount_score': 0.05, 'name_length_score': 0.05, 'market_opportunity_score': 0.15,
+                'price_score': 0.04, 'profit_margin_score': 0.06, 'competition_score': 0.04,
+                'demand_score': 0.06, 'rating_score': 0.25, 'review_score': 0.06,
+                'discount_score': 0.04, 'name_length_score': 0.03, 'market_opportunity_score': 0.10,
+                'sales_urgency_score': 0.12, 'supply_scarcity_score': 0.10, 'shipping_advantage_score': 0.10,
             },
         }
 
@@ -987,13 +1243,49 @@ if st.session_state.analyzed_data is not None:
                         st.markdown(f"${price:.2f} | ⭐{rating} | {rec_emoji}{rec}")
                         st.markdown(f"综合评分: **{score:.1f}**")
 
+                        sold_count = row.get('sold_count')
+                        sold_days = row.get('sold_days')
+                        sales_label = row.get('sales_label')
+                        if pd.notna(sold_count) and sold_count:
+                            days_str = int(sold_days) if pd.notna(sold_days) else '?'
+                            label_text = sales_label if pd.notna(sales_label) and sales_label else 'Better Hurry'
+                            st.markdown(f"🔥 **{label_text}**: {int(sold_count)} sold in {days_str} days")
+
+                        social_tags = row.get('social_tags')
+                        if social_tags and isinstance(social_tags, (list, str)):
+                            if isinstance(social_tags, str):
+                                try:
+                                    import json
+                                    social_tags = json.loads(social_tags)
+                                except Exception:
+                                    social_tags = [social_tags]
+                            if social_tags:
+                                tags_str = ' | '.join([f'🏷️ {t}' for t in social_tags])
+                                st.markdown(tags_str)
+
+                        stock_left = row.get('stock_left')
+                        if pd.notna(stock_left) and stock_left:
+                            st.markdown(f"📦 **库存**: {int(stock_left)} left")
+
+                        is_low_stock = row.get('is_low_stock')
+                        if is_low_stock:
+                            st.markdown(f"⚠️ **低库存**")
+
+                        shipping_type = row.get('shipping_type')
+                        if shipping_type and pd.notna(shipping_type):
+                            st.markdown(f"🚚 **配送**: FREE {shipping_type} Delivery")
+
+                        is_sponsored = row.get('is_sponsored')
+                        if is_sponsored:
+                            st.markdown(f"📢 **广告产品**")
+
                         url = row.get('url', '')
                         if url and isinstance(url, str) and url.startswith('http'):
                             st.markdown(f"[查看详情 ↗]({url})")
 
             st.markdown("---")
 
-        display_cols = ['name', 'price', 'rating', 'review_count', 'total_score', 'recommendation']
+        display_cols = ['name', 'price', 'rating', 'review_count', 'sold_count', 'sold_days', 'sales_label', 'social_tags', 'stock_left', 'is_low_stock', 'shipping_type', 'is_sponsored', 'total_score', 'recommendation']
         available_cols = [c for c in display_cols if c in df.columns]
 
         df_display = df[available_cols].copy()
@@ -1003,6 +1295,31 @@ if st.session_state.analyzed_data is not None:
 
         if 'price' in df_display.columns:
             df_display['price'] = df_display['price'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else '-')
+
+        if 'sold_count' in df_display.columns:
+            df_display['sold_count'] = df_display['sold_count'].apply(lambda x: int(x) if pd.notna(x) else '-')
+
+        if 'sold_days' in df_display.columns:
+            df_display['sold_days'] = df_display['sold_days'].apply(lambda x: int(x) if pd.notna(x) else '-')
+
+        if 'stock_left' in df_display.columns:
+            df_display['stock_left'] = df_display['stock_left'].apply(lambda x: int(x) if pd.notna(x) else '-')
+
+        if 'is_low_stock' in df_display.columns:
+            df_display['is_low_stock'] = df_display['is_low_stock'].apply(lambda x: '⚠️' if x else '')
+
+        if 'is_sponsored' in df_display.columns:
+            df_display['is_sponsored'] = df_display['is_sponsored'].apply(lambda x: '📢' if x else '')
+
+        if 'social_tags' in df_display.columns:
+            df_display['social_tags'] = df_display['social_tags'].apply(
+                lambda x: ', '.join(x) if isinstance(x, list) and x else (str(x) if pd.notna(x) and x else '')
+            )
+
+        if 'sales_label' in df_display.columns:
+            df_display['sales_label'] = df_display['sales_label'].apply(
+                lambda x: str(x) if pd.notna(x) and x else ''
+            )
 
         if 'total_score' in df_display.columns:
             df_display['total_score'] = df_display['total_score'].apply(lambda x: f"{x:.1f}")
