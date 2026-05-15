@@ -8,6 +8,14 @@ import time
 import re
 import json
 
+try:
+    from scraper import WayfairScraper
+    SCRAPER_AVAILABLE = True
+except Exception:
+    SCRAPER_AVAILABLE = False
+
+CLOUD_MODE = not SCRAPER_AVAILABLE
+
 
 st.set_page_config(
     page_title="Wayfair 选品分析系统",
@@ -774,7 +782,7 @@ def extract_homedepot_html(html_content):
                 elif data.get('@type') == 'Product':
                     items = [data]
 
-            for page_rank, item in enumerate(items, 1):
+            for item in items:
                 try:
                     if not isinstance(item, dict) or item.get('@type') != 'Product':
                         continue
@@ -839,20 +847,6 @@ def extract_homedepot_html(html_content):
                             'brand': brand,
                             'url': url,
                             'image_url': image,
-                            'sold_count': None,
-                            'sold_days': None,
-                            'sales_label': None,
-                            'social_tags': [],
-                            'stock_left': None,
-                            'is_low_stock': False,
-                            'shipping_type': None,
-                            'is_sponsored': False,
-                            'is_best_seller': False,
-                            'page_rank': page_rank,
-                            'estimated_revenue': None,
-                            'daily_sales_rate': None,
-                            'category': page_category,
-                            'breadcrumb': ' > '.join(page_breadcrumb) if page_breadcrumb else '',
                         })
                 except Exception:
                     continue
@@ -934,20 +928,6 @@ def extract_homedepot_html(html_content):
                                     'brand': brand,
                                     'url': url,
                                     'image_url': image_url,
-                                    'sold_count': None,
-                                    'sold_days': None,
-                                    'sales_label': None,
-                                    'social_tags': [],
-                                    'stock_left': None,
-                                    'is_low_stock': False,
-                                    'shipping_type': None,
-                                    'is_sponsored': False,
-                                    'is_best_seller': False,
-                                    'page_rank': page_rank,
-                                    'estimated_revenue': None,
-                                    'daily_sales_rate': None,
-                                    'category': page_category,
-                                    'breadcrumb': ' > '.join(page_breadcrumb) if page_breadcrumb else '',
                                 })
                         except Exception:
                             continue
@@ -962,7 +942,7 @@ def extract_homedepot_html(html_content):
             product_cards = soup.select('[class*="ProductCard"]')
 
         seen_urls = set()
-        for page_rank, card in enumerate(product_cards, 1):
+        for card in product_cards:
             try:
                 link = card.select_one('a[href*="/p/"]')
                 if not link:
@@ -1026,20 +1006,6 @@ def extract_homedepot_html(html_content):
                         'brand': '',
                         'url': url,
                         'image_url': image_url,
-                        'sold_count': None,
-                        'sold_days': None,
-                        'sales_label': None,
-                        'social_tags': [],
-                        'stock_left': None,
-                        'is_low_stock': False,
-                        'shipping_type': None,
-                        'is_sponsored': False,
-                        'is_best_seller': False,
-                        'page_rank': page_rank,
-                        'estimated_revenue': None,
-                        'daily_sales_rate': None,
-                        'category': page_category,
-                        'breadcrumb': ' > '.join(page_breadcrumb) if page_breadcrumb else '',
                     })
             except Exception:
                 continue
@@ -1050,7 +1016,7 @@ def extract_homedepot_html(html_content):
 with st.sidebar:
     st.header("🔧 控制面板")
 
-    tab1, tab2, tab3 = st.tabs(["🌐 Wayfair", "🏠 Home Depot", "📂 手动导入"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🌐 网页提取", "🏠 Home Depot", "🤖 辅助抓取", "📂 手动导入"])
 
     with tab1:
         st.subheader("从 Wayfair 网页提取数据")
@@ -1059,7 +1025,7 @@ with st.sidebar:
         with st.expander("📖 操作步骤 (点击展开)", expanded=True):
             st.markdown("""
             **第一步: 打开 Wayfair**
-            1. 用浏览器打开 [wayfair.com](https://www.wayfair.com)
+            1. 用 Edge 浏览器打开 [wayfair.com](https://www.wayfair.com)
             2. 如果有代理,请先配置好代理再打开
 
             **第二步: 搜索产品**
@@ -1159,6 +1125,70 @@ with st.sidebar:
         st.markdown("💡 Wayfair 和 Home Depot 的数据可以合并分析,也可以单独查看")
 
     with tab3:
+        st.subheader("辅助抓取 Wayfair 数据")
+
+        if not SCRAPER_AVAILABLE:
+            st.warning("⚠️ 辅助抓取功能暂不可用")
+            st.info("请使用「🌐 网页提取」标签,更简单可靠!")
+        else:
+            st.info("1. 点击「打开浏览器」启动 Edge\n2. 在浏览器中手动搜索 Wayfair 产品\n3. 搜索结果加载后点击「提取当前页面」")
+
+            proxy_enabled = st.checkbox("🌐 使用代理", value=False, help="通过代理访问 Wayfair (推荐海外代理)", key="proxy2")
+            proxy_url = None
+            if proxy_enabled:
+                proxy_url = st.text_input(
+                    "代理地址",
+                    placeholder="socks5://127.0.0.1:1080 或 http://user:pass@ip:port",
+                    help="SOCKS5/HTTP 代理地址",
+                    key="proxy_url2"
+                )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("🌐 打开浏览器", use_container_width=True, key="btn_open"):
+                    try:
+                        scraper = WayfairScraper(headless=False, proxy=proxy_url if proxy_enabled else None)
+                        if scraper.init_driver():
+                            st.session_state.scraper = scraper
+                            st.success("✅ 浏览器已打开! 请在浏览器中搜索产品")
+                        else:
+                            st.error("浏览器启动失败")
+                    except Exception as e:
+                        st.error(f"启动失败: {e}")
+
+            with col2:
+                if st.button("📋 提取当前页面", type="primary", use_container_width=True, key="btn_extract"):
+                    scraper = st.session_state.get('scraper')
+                    if scraper and scraper.driver:
+                        with st.spinner("正在提取当前页面数据..."):
+                            try:
+                                products = scraper.extract_current_page()
+                                if products:
+                                    if st.session_state.products_data is not None:
+                                        existing = st.session_state.products_data
+                                        new_df = pd.DataFrame(products)
+                                        st.session_state.products_data = pd.concat([existing, new_df], ignore_index=True)
+                                    else:
+                                        st.session_state.products_data = pd.DataFrame(products)
+                                    st.success(f"✅ 提取到 {len(products)} 个产品! (共 {len(st.session_state.products_data)} 个)")
+                                else:
+                                    st.warning("未提取到数据,请确保浏览器显示的是搜索结果页")
+                            except Exception as e:
+                                st.error(f"提取失败: {e}")
+                    else:
+                        st.warning("请先点击「打开浏览器」")
+
+            if st.session_state.get('scraper') and hasattr(st.session_state.scraper, 'driver') and st.session_state.scraper.driver:
+                if st.button("🔒 关闭浏览器", use_container_width=True, key="btn_close"):
+                    try:
+                        st.session_state.scraper.close()
+                        st.session_state.scraper = None
+                        st.success("浏览器已关闭")
+                    except Exception:
+                        st.session_state.scraper = None
+
+    with tab4:
         st.subheader("手动导入数据文件")
 
         st.markdown("""
@@ -1319,10 +1349,7 @@ if st.session_state.analyzed_data is not None:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        if len(df) != len(df_full):
-            st.metric("产品总数", f"{len(df)} / {len(df_full)}", delta="筛选后 / 全部")
-        else:
-            st.metric("产品总数", len(df))
+        st.metric("产品总数", len(df))
 
     with col2:
         avg_price = df['price'].mean() if 'price' in df.columns else 0
@@ -1963,7 +1990,7 @@ else:
 
     with col1:
         st.markdown("""
-        ### 🌐 Wayfair 提取
+        ### 🌐 Wayfair 提取 (推荐)
 
         1. 用浏览器打开 wayfair.com
         2. 搜索产品关键词

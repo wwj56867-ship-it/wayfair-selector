@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+edge_profile/
+debug/
+*.png
+*.jpg
+*.xlsx
+*.csv
+*.bat
+*.txt
+!requirements.txt
+.DS_Store
